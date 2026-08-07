@@ -4,6 +4,7 @@ import {
   tip as chainTip, stats as chainStats, wallet, privHex, syncing as chainSyncing,
   mempool as chainMempool, lastUpdate,
   initWallet, doCreateWallet, importWallet, wipeWallet, startPolling, refreshNetwork,
+  onChainBalance, onChainNonce, balanceLoading, balanceHeight, refreshBalance,
 } from './composables/useNetwork';
 import { weiToBr, brToWei, compactAddr, formatCount } from './lib/format';
 import { buildTransaction, txPreimage, submitTxs, getBlocks, fromHex, CHAIN_ID, MIN_FEE_PER_BYTE } from './lib/brc';
@@ -47,8 +48,12 @@ async function doSend() {
   }
   sendStatus.value = '签名并广播中…';
   try {
-    // nonce 0 as best-effort — actual nonce comes from on-chain account state.
-    const unsigned = { from: w.pub, to: fromHex(to), amount, fee: fee as bigint, nonce: 0 };
+    if (amount + fee > onChainBalance.value) {
+      sendStatus.value = `余额不足：可用 ${weiToBr(onChainBalance.value)} BRC，需 ${weiToBr(amount + fee)} BRC+手续费`;
+      return;
+    }
+    // 用链上真实 nonce
+    const unsigned = { from: w.pub, to: fromHex(to), amount, fee: fee as bigint, nonce: onChainNonce.value };
     const preimage = txPreimage(unsigned);
     const sig = await signPreimage(preimage, w.priv);
     const tx = buildTransaction(unsigned, sig);
@@ -56,7 +61,7 @@ async function doSend() {
     const res = await submitTxs([hex]);
     if (res.admitted > 0) {
       sendOk.value = true;
-      sendStatus.value = '已进入交易池 ✓（若你的账户有余额，矿工会打包）';
+      sendStatus.value = `已进入交易池 ✓（nonce=${onChainNonce.value}，矿工会打包）`;
     } else {
       sendStatus.value = '被拒绝：' + (res.errors?.[0] ?? 'unknown');
     }
@@ -137,11 +142,14 @@ const sparkMax = () => Math.max(1, ...sparkData.value);
     <div class="hero">
       <div class="balance-label">总余额</div>
       <div class="balance">
-        <span v-if="wallet">0.00000000<span class="unit">BRC</span></span>
+        <span v-if="wallet">{{ balanceLoading && onChainBalance === 0n ? '…' : weiToBr(onChainBalance) }}<span class="unit">BRC</span></span>
         <span v-else>——</span>
       </div>
       <div v-if="wallet" class="addr" @click="onCopy(wallet.address, '地址已复制')">
         {{ wallet.address }}
+      </div>
+      <div v-if="wallet" style="font-size:11px;color:var(--muted);margin-top:4px">
+        nonce {{ onChainNonce }} · {{ balanceLoading ? '读取链上余额…' : balanceHeight ? `快照 @H${balanceHeight}` : '' }}
       </div>
       <div :class="['copy-hint', { show: copied }]">{{ copiedWhat }}</div>
       <p v-if="!wallet" class="notice" style="margin-top:12px">尚未创建钱包。<br>去「钱包」页生成你的 BrowserCoin 地址。</p>
@@ -213,6 +221,15 @@ const sparkMax = () => Math.max(1, ...sparkData.value);
   <section v-if="tab === 'send'">
     <div class="card">
       <h3>发送 BRC</h3>
+      <div class="stat" style="margin-bottom:12px">
+        <div class="v" style="font-size:18px">{{ weiToBr(onChainBalance) }} <span class="k">BRC 可用</span>
+          <span style="font-size:12px;color:var(--muted)">· nonce {{ onChainNonce }}</span>
+        </div>
+        <div class="k">
+          {{ balanceLoading ? '读取链上余额…' : `链上余额（快照 H${balanceHeight ?? '?'}）` }}
+          <span @click="refreshBalance(true)" style="cursor:pointer;color:var(--accent2)">[刷新]</span>
+        </div>
+      </div>
       <label>收款地址（公钥，64 位十六进制）</label>
       <input class="input" v-model="sendTo" placeholder="2ab6d81c…" />
       <label>金额（BRC）</label>
@@ -229,7 +246,7 @@ const sparkMax = () => Math.max(1, ...sparkData.value);
       <h3>说明</h3>
       <p class="notice">
         · 交易为 152 字节，签名用 Ed25519，广播到官方 helper（api1/api2.browsercoin.org）。<br>
-        · 当前版本使用外键 <span class="mono">nonce = 0</span>，仅在你账户新开时可用；真实钱包需读取链上 nonce。<br>
+        · 使用<b>链上真实 nonce</b> 构造交易；余额需账户有 BRC 才能被矿工打包。<br>
         · 收到「被拒绝」通常是余额为 0 或 nonce 不符 —— 新地址无余额属正常。
       </p>
     </div>

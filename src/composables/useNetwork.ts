@@ -49,7 +49,10 @@ export const privHex = ref('');
 
 export async function initWallet(): Promise<void> {
   wallet.value = await restoreWallet();
-  if (wallet.value) privHex.value = hexOf(wallet.value.priv);
+  if (wallet.value) {
+    privHex.value = hexOf(wallet.value.priv);
+    refreshBalance();
+  }
 }
 
 export async function doCreateWallet(): Promise<Wallet> {
@@ -77,10 +80,37 @@ export function wipeWallet(): void {
   privHex.value = '';
 }
 
+// ---- 链上余额(来自 /snapshot) ----
+export const onChainBalance = ref(0n);
+export const onChainNonce = ref(0);
+export const balanceLoading = ref(false);
+export const balanceHeight = ref<number | null>(null);
+let balanceInFlight = false;
+
+export async function refreshBalance(force = false): Promise<void> {
+  const w = wallet.value;
+  if (!w || balanceInFlight) return;
+  balanceInFlight = true;
+  balanceLoading.value = true;
+  try {
+    const { getAccountOnChain } = await import('../lib/brc');
+    const acc = await getAccountOnChain(w.address, force);
+    onChainBalance.value = acc.balance;
+    onChainNonce.value = acc.nonce;
+    balanceHeight.value = acc.atHeight;
+  } catch {
+    // 网络错误时保留上次值
+  } finally {
+    balanceLoading.value = false;
+    balanceInFlight = false;
+  }
+}
+
+// 钱包变化时刷新余额
+watch(wallet, (w) => {
+  if (w) { startPolling(); refreshBalance(); } else { stopPolling(); onChainBalance.value = 0n; onChainNonce.value = 0; }
+});
+
 function hexOf(b: Uint8Array): string {
   return Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join('');
 }
-
-watch(wallet, (w) => {
-  if (w) startPolling(); else stopPolling();
-});

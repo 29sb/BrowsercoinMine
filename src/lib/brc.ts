@@ -132,10 +132,8 @@ export async function submitTxs(txHexes: string[]): Promise<{ admitted: number; 
 }
 
 // ---- account state from the ledger ----
-// The account model stores {balance, nonce} per address. Query by scanning the
-// balances snapshot the server exposes is not a public endpoint, so we derive
-// from the chain: walk blocks and sum coinbase + txs touching our address.
-export interface AccountInfo { balance: bigint; nonce: number; txsIn: number; txsOut: number; rewardMined: bigint }
+// The account model stores {balance, nonce} per address. Query by copying.
+export interface AccountInfo { balance: bigint; nonce: number }
 
 // Decode a 152-byte base tx from hex (offset 0) or from a block body.
 export function decodeTxHex(txHex: string): {
@@ -152,4 +150,42 @@ export function decodeTxHex(txHex: string): {
     const nonce = dv.getUint32(84, false);
     return { from, to, amount, fee, nonce, txid: txHex.slice(0, 16) + '…' };
   } catch { return null; }
+}
+
+export interface OnChainAccount {
+  balance: bigint;     // 余额(快照确认区)
+  nonce: number;       // 下一个可用交易 nonce
+  atHeight: number;    // 快照高度(约12块确认,~30分钟前)
+}
+
+let _snapCache: { height: number; accounts: [string, string, number][] } | null = null;
+let _snapAt = 0;
+
+/**
+ * 查询地址的链上真实余额与 nonce(从官方 /snapshot 确认区读取)。
+ * 该快照是 finalize 后的状态(约落后 tip 30 分钟),对钱包足够;
+ * 缓存以避免每次重拉(接口较重)。
+ * address: 64 位 hex 公钥。
+ */
+export async function getAccountOnChain(address: string, force = false): Promise<OnChainAccount> {
+  const addr = address.toLowerCase();
+  // 缓存 60 秒,避免频繁打快照接口
+  if (!force && _snapCache && Date.now() - _snapAt < 60000) {
+    const row = _snapCache.accounts.find((r) => r[0] === addr);
+    return {
+      balance: row ? BigInt(row[1]) : 0n,
+      nonce: row ? row[2] : 0,
+      atHeight: _snapCache.height,
+    };
+  }
+  const snap = await apiFetch('/snapshot');
+  const accounts = (snap.accounts as [string, string, number][]) ?? [];
+  _snapCache = { height: snap.height as number, accounts };
+  _snapAt = Date.now();
+  const row = accounts.find((r) => r[0] === addr);
+  return {
+    balance: row ? BigInt(row[1]) : 0n,
+    nonce: row ? row[2] : 0,
+    atHeight: snap.height as number,
+  };
 }
