@@ -1,0 +1,32 @@
+{
+  "name": "brc-wallet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BrowserCoin light wallet for Android — live chain dashboard, BRC send, Ed25519 wallet",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "cap:add": "cap add android",
+    "sync": "cap sync android",
+    "apk": "vite build && cap sync android && cd android && ./gradlew assembleDebug",
+    "apk:install": "vite build && cap sync android && cd android && ./gradlew installDebug",
+    "test:proto": "tsx scripts/protocol-smoke.ts"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.5.0",
+    "@rolldown/binding-linux-arm64-gnu": "^1.2.3",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vue": "^3.5.41"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/cli": "^6.2.1",
+    "@capacitor/core": "^6.2.1",
+    "tsx": "^4.23.10",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.1"
+  }
+}
