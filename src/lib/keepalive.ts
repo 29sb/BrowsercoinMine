@@ -7,6 +7,8 @@ interface BGKeepAlive {
   stopWarmup(): Promise<{ ok: boolean }>;
   requestIgnoreBattery(): Promise<{ granted: boolean }>;
   isIgnoringBattery(): Promise<{ ignoring: boolean }>;
+  setCpuAwake(opts: { on: boolean }): Promise<{ ok: boolean }>;
+  setScreenDim(opts: { on: boolean }): Promise<{ ok: boolean }>;
 }
 
 let plugin: BGKeepAlive | null = null;
@@ -24,6 +26,8 @@ function loadPlugin(): BGKeepAlive | null {
         stopWarmup: async () => ({ ok: false }),
         requestIgnoreBattery: async () => ({ granted: false }),
         isIgnoringBattery: async () => ({ ignoring: false }),
+        setCpuAwake: async () => ({ ok: false }),
+        setScreenDim: async () => ({ ok: false }),
       }),
     });
     plugin = p;
@@ -63,4 +67,18 @@ export async function isIgnoringBattery(): Promise<boolean> {
   const p = loadPlugin();
   if (!p) return { ignoring: false } as any;
   try { const r = await p.isIgnoringBattery(); return r.ignoring; } catch { return false; }
+}
+
+/** CPU 常醒(on=false 关闭),锁屏后挖矿不休眠。 */
+export async function setCpuAwake(on: boolean): Promise<boolean> {
+  const p = loadPlugin();
+  if (!p) return false;
+  try { await p.setCpuAwake({ on }); return true; } catch { return false; }
+}
+
+/** 屏幕微亮/恢复(on=false 恢复自动熄屏)。 */
+export async function setScreenDim(on: boolean): Promise<boolean> {
+  const p = loadPlugin();
+  if (!p) return false;
+  try { await p.setScreenDim({ on }); return true; } catch { return false; }
 }

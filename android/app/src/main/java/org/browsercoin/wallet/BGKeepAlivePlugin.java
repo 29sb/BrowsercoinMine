@@ -43,4 +43,22 @@ public class BGKeepAlivePlugin extends Plugin {
         boolean ignoring = MineService.isIgnoringBattery(getContext());
         call.resolve(new JSObject().put("ignoring", ignoring));
     }
+
+    /** 挖矿时 CPU 常醒(锁屏后挖矿不休眠)。 */
+    @PluginMethod
+    public void setCpuAwake(PluginCall call) {
+        Boolean on = call.getBoolean("on", true);
+        if (on == null || on) MineService.setAwakeOn(getContext());
+        else MineService.setAwakeOff(getContext());
+        call.resolve(new JSObject().put("ok", true));
+    }
+
+    /** 屏幕微亮(不灭),可选。 */
+    @PluginMethod
+    public void setScreenDim(PluginCall call) {
+        Boolean on = call.getBoolean("on", true);
+        if (on == null || on) MineService.dimScreen(getContext());
+        else MineService.undimScreen(getContext());
+        call.resolve(new JSObject().put("ok", true));
+    }
 }

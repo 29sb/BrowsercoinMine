@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { wallet } from './composables/useNetwork';
 import { initSession, buildCandidate, submitBlock, compactToTarget, encodeHeader as encHeader, type MinerSession } from './lib/miner';
-import { startKeepAlive, stopKeepAlive, requestIgnoreBattery, isIgnoringBattery, isNative } from './lib/keepalive';
+import { startKeepAlive, stopKeepAlive, requestIgnoreBattery, isIgnoringBattery, isNative, setCpuAwake, setScreenDim } from './lib/keepalive';
 
 // ---- 状态 ----
 const running = ref(false);
@@ -18,6 +18,7 @@ const useMaxThreads = ref(true);
 const minerHex = ref(wallet.value?.address ?? '');
 const batteryIgnored = ref(false);
 const nativeReady = ref(isNative());
+const screenDim = ref(true); // 挖矿时屏幕微亮默认开
 
 // ---- 内部 ----
 let keepRunning = false;
@@ -141,10 +142,12 @@ function startMining() {
   hashrate.value = 0;
   mined.value = null;
   pushLog(`开始挖矿 (收款 ${addrHex.slice(0, 10)}…)`);
-  // 原生环境: 启动前台服务(常驻通知)保活
+  // 原生环境: 启动前台服务 + CPU 常醒 + 屏幕微亮
   if (isNative()) {
-    startKeepAlive('BRC Wallet 挖矿中', `收款 ${addrHex.slice(0, 10)}… · 后台保活开启`)
-      .then((ok) => pushLog(ok ? '⏫ 前台服务已启动(保活通知)' : '通知不可用,继续挖矿'));
+    startKeepAlive('BRC Wallet 挖矿中', `收款 ${addrHex.slice(0, 10)}… · 保活中`)
+      .then((ok) => pushLog(ok ? '⏫ 前台服务+CPU常醒已开启(锁屏不休眠)' : '通知不可用,继续挖矿'));
+    setCpuAwake(true);
+    if (screenDim.value) setScreenDim(true);
   }
   initSession().then((s) => {
     if (!keepRunning) return;
@@ -180,7 +183,11 @@ function stopMining() {
   if (tipTimer) clearInterval(tipTimer);
   tipTimer = null;
   stopWorkers();
-  if (isNative()) stopKeepAlive();
+  if (isNative()) {
+    stopKeepAlive();
+    setCpuAwake(false);
+    setScreenDim(false);
+  }
 }
 
 // 请求忽略电池优化(原生)
@@ -228,6 +235,16 @@ onUnmounted(() => {
       <div v-if="nativeReady" style="margin-top:6px" @click="onRequestBattery">
         <button class="btn btn-ghost" style="width:100%">
           🔋 {{ batteryIgnored ? '已忽略电池优化 ✓' : '忽略电池优化(后台保活)' }}
+        </button>
+      </div>
+
+      <div v-if="nativeReady" style="margin-top:6px">
+        <button class="btn btn-ghost" style="width:100%" @click="screenDim = !screenDim">
+          <template v-if="running">
+            <span v-if="screenDim" @click.stop>💡 CPU常醒+屏幕微亮 开启中</span>
+            <span v-else @click.stop>⌛ CPU常醒 (屏幕可熄)</span>
+          </template>
+          <template v-else>💡 挖矿时{{ screenDim ? '屏幕微亮' : '屏幕可熄' }}（点切换）</template>
         </button>
       </div>
 
