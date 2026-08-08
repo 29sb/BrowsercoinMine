@@ -1,61 +1,80 @@
 /// <reference lib="webworker" />
-// 挖矿 Worker — 在主线程外跑 Sandglass 找 nonce,避免冻结 UI。
-// 支持并行: 每个 worker 用 startNonce + i*stride 分配互不重叠的 nonce。
-import { sandglassHash } from './vendor/bcochain/crypto/sandglass.js';
-import { encodeHeader } from './vendor/bcochain/chain/block.js';
+// 挖矿 Worker — 逐字节对齐官方 miner.worker.ts 的 grind 结构。
+// 要点: 用 async powHash + 动态 batch + nonce 连续递增(contiguous),与官方一致,
+// 因为官方这套在同样浏览器里能达到多核算力(431 H/s)。
+import { powHash } from './vendor/bcochain/crypto/pow.js';
 import { hashMeetsTarget } from './vendor/bcochain/util/binary.js';
+
+const NONCE_OFFSET = 112;
+const YIELD_TARGET_MS = 64;
+const MAX_BATCH = 1024;
 
 interface StartMsg {
   type: 'start';
   headerBytes: Uint8Array;
-  targetHex: string;
-  startNonce: number;   // 该 worker 的第一个 nonce
-  stride: number;       // 核数(步长),保证并行不重叠
+  targetHex: string;    // hex of bigint target (256-bit)
+  startNonce: number;   // 该 worker 的起始 nonce
 }
 type Msg = StartMsg | { type: 'stop' };
 
 let mining = false;
+let generation = 0;
 
 self.onmessage = (e: MessageEvent<Msg>) => {
   const msg = e.data;
   if (msg.type === 'stop') {
     mining = false;
+    generation++;
     return;
   }
   if (msg.type === 'start') {
     mining = true;
-    try {
-      grindLoop(msg.headerBytes, msg.targetHex, msg.startNonce, msg.stride);
-    } catch (err: any) {
-      self.postMessage({ type: 'error', message: String(err?.message ?? err) });
-    }
+    const myGen = generation;
+    grind(msg, myGen);
   }
 };
 
-function grindLoop(headerBytes: Uint8Array, targetHex: string, startNonce: number, stride: number): void {
-  const header = new Uint8Array(headerBytes);
-  const dv = new DataView(header.buffer, header.byteOffset, header.byteLength);
-  const target = BigInt('0x' + targetHex);
-  let nonce = startNonce >>> 0;
-  let count = 0;
-  const t0 = Date.now();
-  let reportAt = Date.now() + 2000;
+async function grind(msg: StartMsg, myGen: number): Promise<void> {
+  const header = new Uint8Array(msg.headerBytes); // own copy; we mutate nonce
+  const target = BigInt('0x' + msg.targetHex);
+  let nonce = msg.startNonce >>> 0;
+  let hashes = 0;
+  let report = performance.now();
+  let workWindowStart = report;
+  let batch = 1; // ~1 在 Argon2id,~7 在 Sandglass(与官方同策略)
 
-  while (mining) {
-    dv.setUint32(112, nonce, false); // nonce 在 header 的 offset 112
-    if (hashMeetsTarget(sandglassHash(header), target)) {
-      self.postMessage({ type: 'found', nonce });
-      // 命中后告知其它 worker 停止
-      self.postMessage({ type: 'stop-others' });
-      return;
+  while (mining && myGen === generation) {
+    let completed = 0;
+    const batchStart = performance.now();
+    for (let i = 0; i < batch; i++) {
+      header[NONCE_OFFSET]     = (nonce >>> 24) & 0xff;
+      header[NONCE_OFFSET + 1] = (nonce >>> 16) & 0xff;
+      header[NONCE_OFFSET + 2] = (nonce >>> 8) & 0xff;
+      header[NONCE_OFFSET + 3] = nonce & 0xff;
+      const h = await powHash(header);
+      if (hashMeetsTarget(h, target)) {
+        self.postMessage({ type: 'found', nonce });
+      }
+      nonce = (nonce + 1) >>> 0; // 连续递增(与官方一致)
+      completed++;
+      if (nonce === msg.startNonce) {
+        self.postMessage({ type: 'exhausted' });
+        return;
+      }
     }
-    nonce = (nonce + stride) >>> 0; // 每隔 stride 一个,与其他核不重叠
-    count++;
-    if (Date.now() >= reportAt) {
-      const hps = Math.round(count / ((Date.now() - t0) / 1000));
-      self.postMessage({ type: 'progress', hps, count });
-      reportAt = Date.now() + 2000;
-      count = 0;
+    hashes += completed;
+
+    const now = performance.now();
+    if (completed === batch) {
+      const per = (now - batchStart) / batch;
+      if (per > 0) batch = Math.max(1, Math.min(MAX_BATCH, Math.round(YIELD_TARGET_MS / per)));
+    }
+
+    if (now - workWindowStart >= 1000) {
+      const hps = Math.round(hashes / ((now - workWindowStart) / 1000));
+      self.postMessage({ type: 'progress', hps, count: hashes });
+      workWindowStart = now;
+      hashes = 0;
     }
   }
 }

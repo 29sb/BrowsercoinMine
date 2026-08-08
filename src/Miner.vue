@@ -163,18 +163,19 @@ function startWorkers() {
       }
     };
     w.onerror = () => { pushLog('worker error'); };
+    const slice = Math.floor(0x1_0000_0000 / n);
+    // 每个 worker 分一段连续 nonce(与官方一致,避免 stride 跳跃)
     w.postMessage({
       type: 'start',
       headerBytes: currentTemplate.header,
       targetHex: currentTemplate.targetHex,
-      startNonce: (i * 16777216) >>> 0,
-      stride: n,
+      startNonce: (i * slice) >>> 0,
     });
     workerPool.push(w);
     activeWorkers++;
   }
   hashrate.value = 0;
-}
+};
 
 function startMining() {
   error.value = '';
