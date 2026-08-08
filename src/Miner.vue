@@ -30,7 +30,6 @@ const etaSec = ref(0);             // 预计出块时间(秒)
 const sessionBlocks = ref(0);      // 本会话挖到块数
 const sessionRewards = ref(0n);    // 本会话收益(wei)
 const workerHps = ref<number[]>([]); // 各 worker 算力
-const ticker = ref('');            // nonce ticker 动画
 let workerHpsArr: number[] = [];
 
 // ---- 内部 ----
@@ -112,23 +111,11 @@ function stopWorkers() {
 let totalHash = 0;
 let hashWinT0 = Date.now();
 let lastUiTs = 0;
-let tickerInterval: ReturnType<typeof setInterval> | null = null;
 let statsInterval: ReturnType<typeof setInterval> | null = null;
 
-function startTicker() {
-  if (tickerInterval) clearInterval(tickerInterval);
-  tickerInterval = setInterval(() => {
-    if (!running.value) return;
-    const rndHex = (n: number) => Array.from({ length: n }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
-    ticker.value = `nonce 0x${rndHex(8)}  hash 0x${rndHex(12)}…`;
-  }, 1500);
-}
-function stopTicker() {
-  if (tickerInterval) clearInterval(tickerInterval);
-  tickerInterval = null;
+function clearStats() {
   if (statsInterval) clearInterval(statsInterval);
   statsInterval = null;
-  ticker.value = '';
 }
 
 function startWorkers() {
@@ -201,8 +188,6 @@ function startMining() {
   mined.value = null;
   sessionBlocks.value = 0;
   sessionRewards.value = 0n;
-  // 启动 nonce ticker 动画
-  startTicker();
   // 每 2s 计算一次命中率/ETA(独立于 worker 上报,避免热路径)
   if (statsInterval) clearInterval(statsInterval);
   statsInterval = setInterval(() => {
@@ -257,7 +242,7 @@ function stopMining() {
   if (tipTimer) clearInterval(tipTimer);
   tipTimer = null;
   stopWorkers();
-  stopTicker();
+  clearStats();
   if (isNative()) {
     stopKeepAlive();
     setCpuAwake(false);
@@ -326,13 +311,10 @@ onUnmounted(() => {
       <div v-if="error" class="notice" style="color:var(--red);margin-bottom:8px">{{ error }}</div>
 
       <div v-if="running" style="margin-top:10px">
-        <!-- 大号算力 Hero + nonce ticker -->
+        <!-- 大号算力 Hero -->
         <div style="text-align:center;padding:4px 0 2px">
           <div class="v green" style="font-size:44px;font-weight:800;line-height:1">{{ hashrate }}<span style="font-size:16px;margin-left:4px;color:var(--muted)">H/s</span></div>
           <div class="k" style="margin-top:2px">{{ useMaxThreads ? cpuCores() : threadCount }} 核 · mining block #{{ currHeight ?? '…' }}</div>
-          <div class="nonce-ticker mono" style="margin-top:8px;font-size:11px;color:var(--green);font-family:ui-monospace,monospace">
-            {{ ticker || 'grinding…' }}
-          </div>
         </div>
 
         <!-- 实时统计 -->
