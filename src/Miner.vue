@@ -111,7 +111,9 @@ function stopWorkers() {
 // 算力统计(多核求和): 主线程累加各 worker 上报的 hash 数,按时间窗算总算力
 let totalHash = 0;
 let hashWinT0 = Date.now();
+let lastUiTs = 0;
 let tickerInterval: ReturnType<typeof setInterval> | null = null;
+let statsInterval: ReturnType<typeof setInterval> | null = null;
 
 function startTicker() {
   if (tickerInterval) clearInterval(tickerInterval);
@@ -119,11 +121,13 @@ function startTicker() {
     if (!running.value) return;
     const rndHex = (n: number) => Array.from({ length: n }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
     ticker.value = `nonce 0x${rndHex(8)}  hash 0x${rndHex(12)}…`;
-  }, 600);
+  }, 1500);
 }
 function stopTicker() {
   if (tickerInterval) clearInterval(tickerInterval);
   tickerInterval = null;
+  if (statsInterval) clearInterval(statsInterval);
+  statsInterval = null;
   ticker.value = '';
 }
 
@@ -141,19 +145,14 @@ function startWorkers() {
       const m = e.data;
       if (m.type === 'progress') {
         attempts.value += m.count;
-        totalHash += m.count;
         templateHashes.value += m.count;
-        workerHpsArr[i] = m.hps; // 按 worker 记录
-        workerHps.value = [...workerHpsArr];
-        // 总算力 = 所有 worker hps 之和(每 ~1s 由各worker报告的即时值求和)
-        hashrate.value = workerHpsArr.reduce((a, b) => a + b, 0);
-        // P(found by now) 与 ETA
-        if (expectedPerBlock.value > 0n) {
-          const p = 1 - Math.exp(-Number(templateHashes.value) / Number(expectedPerBlock.value));
-          pFoundRate.value = Math.min(99.9, p * 100);
-        }
-        if (hashrate.value > 0) {
-          etaSec.value = Math.round(Number(expectedPerBlock.value) / hashrate.value);
+        // 把 worker hps 存到非响应式数组,避免每个 worker 每秒触发 Vue 重渲染
+        workerHpsArr[i] = m.hps;
+        // 用常量节流更新显示(约每 1s 刷新一次即可,不必每次 progress)
+        if (Date.now() - lastUiTs > 900) {
+          lastUiTs = Date.now();
+          hashrate.value = workerHpsArr.reduce((a, b) => a + b, 0);
+          workerHps.value = [...workerHpsArr];
         }
       } else if (m.type === 'found') {
         const h = currentBlock!.header.height;
@@ -204,6 +203,18 @@ function startMining() {
   sessionRewards.value = 0n;
   // 启动 nonce ticker 动画
   startTicker();
+  // 每 2s 计算一次命中率/ETA(独立于 worker 上报,避免热路径)
+  if (statsInterval) clearInterval(statsInterval);
+  statsInterval = setInterval(() => {
+    if (!running.value) return;
+    if (expectedPerBlock.value > 0n && templateHashes.value > 0) {
+      const p = 1 - Math.exp(-Number(templateHashes.value) / Number(expectedPerBlock.value));
+      pFoundRate.value = Math.min(99.9, p * 100);
+    }
+    if (hashrate.value > 0 && expectedPerBlock.value > 0n) {
+      etaSec.value = Math.round(Number(expectedPerBlock.value) / hashrate.value);
+    }
+  }, 2000);
   pushLog(`开始挖矿 (收款 ${addrHex.slice(0, 10)}…)`);
   // 原生环境: 启动前台服务 + CPU 常醒 + 屏幕微亮
   if (isNative()) {

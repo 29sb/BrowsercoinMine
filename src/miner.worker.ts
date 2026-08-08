@@ -39,7 +39,7 @@ function grindLoop(headerBytes: Uint8Array, targetHex: string, startNonce: numbe
   let nonce = startNonce >>> 0;
   let count = 0;
   const t0 = Date.now();
-  let reportAt = Date.now() + 1000;
+  let reportAt = Date.now() + 2000;
 
   while (mining) {
     dv.setUint32(112, nonce, false); // nonce 在 header 的 offset 112
@@ -54,7 +54,7 @@ function grindLoop(headerBytes: Uint8Array, targetHex: string, startNonce: numbe
     if (Date.now() >= reportAt) {
       const hps = Math.round(count / ((Date.now() - t0) / 1000));
       self.postMessage({ type: 'progress', hps, count });
-      reportAt = Date.now() + 1000;
+      reportAt = Date.now() + 2000;
       count = 0;
     }
   }
