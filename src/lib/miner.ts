@@ -115,3 +115,16 @@ export async function submitBlock(b: Block): Promise<string> {
 }
 
 export { compactToTarget, bytesToHex, hexToBytes, encodeHeader };
+
+/** 每块平均期望哈希数 = 2^256 / target。difficulty 为 compact。 */
+export function expectedHashesForDifficulty(difficulty: number): bigint {
+  const target = compactToTarget(difficulty);
+  if (target <= 0n) return 2n ** 256n;
+  return (2n ** 256n) / target;
+}
+
+/** 全网算力估计(H/s) ≈ 每块期望哈希 / 目标区块时间(150s)。 */
+export function estimateNetHashrate(difficulty: number): number {
+  const exp = expectedHashesForDifficulty(difficulty);
+  return Number(exp / 150n);
+}

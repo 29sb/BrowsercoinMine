@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import { wallet } from './composables/useNetwork';
-import { initSession, buildCandidate, submitBlock, compactToTarget, encodeHeader as encHeader, type MinerSession } from './lib/miner';
+import { initSession, buildCandidate, submitBlock, compactToTarget, encodeHeader as encHeader, expectedHashesForDifficulty, estimateNetHashrate, type MinerSession } from './lib/miner';
 import { startKeepAlive, stopKeepAlive, requestIgnoreBattery, isIgnoringBattery, isNative, setCpuAwake, setScreenDim } from './lib/keepalive';
+import { weiToBr } from './lib/format';
 
 // ---- 状态 ----
 const running = ref(false);
@@ -20,6 +21,18 @@ const batteryIgnored = ref(false);
 const nativeReady = ref(isNative());
 const screenDim = ref(true); // 挖矿时屏幕微亮默认开
 
+// ---- 实时统计(官网风格) ----
+const netHashrate = ref(0);        // 全网算力估计(H/s)
+const expectedPerBlock = ref(0n);  // 每块期望哈希数
+const templateHashes = ref(0);     // 当前模板已试哈希(算 P(found))
+const pFoundRate = ref(0);         // P(found by now) 0~100
+const etaSec = ref(0);             // 预计出块时间(秒)
+const sessionBlocks = ref(0);      // 本会话挖到块数
+const sessionRewards = ref(0n);    // 本会话收益(wei)
+const workerHps = ref<number[]>([]); // 各 worker 算力
+const ticker = ref('');            // nonce ticker 动画
+let workerHpsArr: number[] = [];
+
 // ---- 内部 ----
 let keepRunning = false;
 let session: MinerSession | null = null;
@@ -31,6 +44,18 @@ let tipTimer: ReturnType<typeof setInterval> | null = null;
 
 const cpuCores = () => navigator.hardwareConcurrency || 1;
 const threadCount = ref(cpuCores());
+function fmtEta(sec: number): string {
+  if (!sec || sec <= 0) return '—';
+  if (sec < 90) return `${sec}s`;
+  if (sec < 3600) return `${(sec / 60).toFixed(0)}m`;
+  if (sec < 86400) return `${(sec / 3600).toFixed(1)}h`;
+  return `${(sec / 86400).toFixed(1)}d`;
+}
+function fmtNetHr(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
 
 function pushLog(msg: string) {
   log.value.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
@@ -62,6 +87,10 @@ function buildTemplate() {
   currDifficulty.value = cand.header.difficulty;
   const target = compactToTarget(cand.header.difficulty);
   currentTemplate = { header: encHeader(cand.header), targetHex: target.toString(16), height: cand.header.height };
+  expectedPerBlock.value = expectedHashesForDifficulty(cand.header.difficulty);
+  netHashrate.value = estimateNetHashrate(cand.header.difficulty);
+  templateHashes.value = 0;
+  pFoundRate.value = 0;
   pushLog(`▷ 模板 #${cand.header.height} 难度0x${cand.header.difficulty.toString(16)}`);
 }
 
@@ -72,11 +101,31 @@ function stopWorkers() {
   hashrate.value = 0;
   totalHash = 0;
   hashWinT0 = Date.now();
+  workerHpsArr = [];
+  workerHps.value = [];
+  templateHashes.value = 0;
+  pFoundRate.value = 0;
+  etaSec.value = 0;
 }
 
 // 算力统计(多核求和): 主线程累加各 worker 上报的 hash 数,按时间窗算总算力
 let totalHash = 0;
 let hashWinT0 = Date.now();
+let tickerInterval: ReturnType<typeof setInterval> | null = null;
+
+function startTicker() {
+  if (tickerInterval) clearInterval(tickerInterval);
+  tickerInterval = setInterval(() => {
+    if (!running.value) return;
+    const rndHex = (n: number) => Array.from({ length: n }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+    ticker.value = `nonce 0x${rndHex(8)}  hash 0x${rndHex(12)}…`;
+  }, 600);
+}
+function stopTicker() {
+  if (tickerInterval) clearInterval(tickerInterval);
+  tickerInterval = null;
+  ticker.value = '';
+}
 
 function startWorkers() {
   if (!currentTemplate || !keepRunning) return;
@@ -84,6 +133,8 @@ function startWorkers() {
   threadCount.value = n;
   totalHash = 0;
   hashWinT0 = Date.now();
+  workerHpsArr = new Array(n).fill(0);
+  workerHps.value = [...workerHpsArr];
   for (let i = 0; i < n; i++) {
     const w = new Worker(new URL('./miner.worker.ts', import.meta.url), { type: 'module' });
     w.onmessage = (e) => {
@@ -91,17 +142,25 @@ function startWorkers() {
       if (m.type === 'progress') {
         attempts.value += m.count;
         totalHash += m.count;
-        // 每 ~1s 计算一次总算力: 窗口内累计哈希 / 窗口秒
-        const now = Date.now();
-        const win = (now - hashWinT0) / 1000;
-        if (win >= 1) {
-          hashrate.value = Math.round(totalHash / win);
-          totalHash = 0;
-          hashWinT0 = now;
+        templateHashes.value += m.count;
+        workerHpsArr[i] = m.hps; // 按 worker 记录
+        workerHps.value = [...workerHpsArr];
+        // 总算力 = 所有 worker hps 之和(每 ~1s 由各worker报告的即时值求和)
+        hashrate.value = workerHpsArr.reduce((a, b) => a + b, 0);
+        // P(found by now) 与 ETA
+        if (expectedPerBlock.value > 0n) {
+          const p = 1 - Math.exp(-Number(templateHashes.value) / Number(expectedPerBlock.value));
+          pFoundRate.value = Math.min(99.9, p * 100);
+        }
+        if (hashrate.value > 0) {
+          etaSec.value = Math.round(Number(expectedPerBlock.value) / hashrate.value);
         }
       } else if (m.type === 'found') {
         const h = currentBlock!.header.height;
         mined.value = { h, nonce: m.nonce };
+        sessionBlocks.value += 1;
+        // 当前奖励约 50 BRC(减半前);更精确从 miner.ts blockReward 拿但简化
+        sessionRewards.value += 5_000_000_000n; // 50 BRC
         pushLog(`🎉 命中 nonce=${m.nonce}! 提交…`);
         stopWorkers();
         currentBlock!.header.nonce = m.nonce;
@@ -141,6 +200,10 @@ function startMining() {
   attempts.value = 0;
   hashrate.value = 0;
   mined.value = null;
+  sessionBlocks.value = 0;
+  sessionRewards.value = 0n;
+  // 启动 nonce ticker 动画
+  startTicker();
   pushLog(`开始挖矿 (收款 ${addrHex.slice(0, 10)}…)`);
   // 原生环境: 启动前台服务 + CPU 常醒 + 屏幕微亮
   if (isNative()) {
@@ -183,6 +246,7 @@ function stopMining() {
   if (tipTimer) clearInterval(tipTimer);
   tipTimer = null;
   stopWorkers();
+  stopTicker();
   if (isNative()) {
     stopKeepAlive();
     setCpuAwake(false);
@@ -251,17 +315,43 @@ onUnmounted(() => {
       <div v-if="error" class="notice" style="color:var(--red);margin-bottom:8px">{{ error }}</div>
 
       <div v-if="running" style="margin-top:10px">
-        <div class="stat-grid" style="grid-template-columns:1fr 1fr">
-          <div class="stat"><div class="v green">{{ hashrate }}</div><div class="k">总算力 H/s ({{ useMaxThreads ? cpuCores() : threadCount }}核)</div></div>
-          <div class="stat"><div class="v gold">{{ attempts.toLocaleString() }}</div><div class="k">已试 nonce</div></div>
-          <div class="stat"><div class="v blue">{{ currHeight ?? '—' }}</div><div class="k">模板高度</div></div>
-          <div class="stat"><div class="v mono" style="font-size:11px">{{ currDifficulty != null ? '0x'+currDifficulty.toString(16) : '—' }}</div><div class="k">难度</div></div>
+        <!-- 大号算力 Hero + nonce ticker -->
+        <div style="text-align:center;padding:4px 0 2px">
+          <div class="v green" style="font-size:44px;font-weight:800;line-height:1">{{ hashrate }}<span style="font-size:16px;margin-left:4px;color:var(--muted)">H/s</span></div>
+          <div class="k" style="margin-top:2px">{{ useMaxThreads ? cpuCores() : threadCount }} 核 · mining block #{{ currHeight ?? '…' }}</div>
+          <div class="nonce-ticker mono" style="margin-top:8px;font-size:11px;color:var(--green);font-family:ui-monospace,monospace">
+            {{ ticker || 'grinding…' }}
+          </div>
         </div>
+
+        <!-- 实时统计 -->
+        <div class="stat-grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
+          <div class="stat"><div class="v">{{ fmtEta(etaSec) }}</div><div class="k">预计出块</div></div>
+          <div class="stat"><div class="v gold">{{ pFoundRate.toFixed(2) }}%</div><div class="k">当前命中率</div></div>
+          <div class="stat"><div class="v blue">{{ fmtNetHr(netHashrate) }}</div><div class="k">全网算力 H/s</div></div>
+          <div class="stat"><div class="v">{{ attempts.toLocaleString() }}</div><div class="k">已试 nonce</div></div>
+          <div class="stat"><div class="v mono" style="font-size:12px">{{ currDifficulty != null ? '0x'+currDifficulty.toString(16) : '—' }}</div><div class="k">难度</div></div>
+          <div class="stat"><div class="v green">{{ sessionBlocks }}</div><div class="k">本会话出块</div></div>
+        </div>
+
+        <!-- 会话收益 + 诊断 -->
+        <div class="stat" style="margin-top:8px">
+          <div class="v">{{ weiToBr(sessionRewards) }} <span class="k" style="font-size:11px">BRC 本会话挖得</span></div>
+          <div class="k">每块满额 50 BRC · halves every 210000 blocks</div>
+        </div>
+        <details style="margin-top:8px">
+          <summary class="k" style="cursor:pointer">MINING DIAGNOSTICS (展开 per-worker 算力)</summary>
+          <div v-if="workerHps.length" style="margin-top:6px">
+            <div v-for="(w, i) in workerHps" :key="i" class="k mono">
+              核#{{ i }}: {{ w }} H/s
+            </div>
+          </div>
+        </details>
         <p class="notice" style="margin-top:10px">{{ status }}</p>
       </div>
 
       <div v-if="mined" style="margin-top:12px;padding:10px;background:var(--card2);border:1px solid var(--green);border-radius:10px">
-        🎉 命中块 #{{ mined.h }} (nonce {{ mined.nonce }})!
+        🎉 命中块 #{{ mined.h }} (nonce {{ mined.nonce }})! 广播中…
       </div>
     </div>
 

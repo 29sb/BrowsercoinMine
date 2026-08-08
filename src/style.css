@@ -134,3 +134,14 @@ label { font-size: 12px; color: var(--muted); }
 .notice { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .notice strong { color: var(--text); }
 .tag { display: inline-block; background: var(--card2); border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 2px 7px; font-size: 11px; margin-right: 6px; }
+
+/* 挖矿页 */
+.nonce-ticker {
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: inline-block;
+}
+details summary { outline: none; }
+details[open] summary { margin-bottom: 4px; }

@@ -2,19 +2,34 @@
 
 一个运行在手机的 **BrowserCoin 轻钱包 + 独立矿工**：
 - **实时链上状态**：在线矿工数、在线节点 (peer)、区块高度、待打包交易（官方 API 拉取，自动轮询）
-- **钱包**：创建/导入 Ed25519 钱包（地址=公钥），私钥本地持久化，可复制备份
-- **发送**：构造 152 字节交易、Ed25519 签名、广播到官方 helper
-- **挖矿**：内置多核独立矿工（每核一个 Worker，并行磨 Sandglass v3 nonce，不冻结 UI），**自动取钱包页地址**，不需私钥
-- **后台保活**：忽略电池优化 + 前台服务常驻通知，降低后台被杀概率
+- **钱包**：创建/导入 Ed25519 钱包（地址=公钥），私钥本地持久化，可复制备份；显示**真实链上余额与 nonce**
+- **发送**：用**链上真实 nonce** 构造 152 字节交易、Ed25519 签名、广播到官方 helper，发送前校验余额
+- **挖矿**：内置多核独立矿工（每核一个 Worker，并行磨 Sandglass v3 nonce，不冻结 UI），**自动取钱包页地址**，不需私钥；带**官网风格实时界面**（算力 Hero / nonce 动画 / 预计出块 / 命中率 / 会话统计）
+- **后台保活**：忽略电池优化 + 前台服务常驻通知 + **CPU 常醒 + 屏幕微亮**，抗后台被杀
 - **区块浏览器**：最近区块列表（高度 / 交易数 / 矿工）
 
 前端是 **Vue 3 + Vite**，通过 **Capacitor 6** 打包成原生 Android APK。
 
 ---
 
+## 功能清单（一览）
+
+| 功能 | 说明 |
+|---|---|
+| 实时链上状态 | 矿工数 / 节点 / 高度 / 待打包交易，自动 5s 轮询 |
+| 钱包（真实余额）| Ed25519 地址=公钥，从 `/snapshot` 读真实 balance + nonce，缓存 60s |
+| 发送（真实转账）| 用真实 nonce 签名构造交易，`POST /txs`，发送前余额校验 |
+| 多核挖矿 | 每核一 Worker 分 nonce 区间并行沙漏；`v-show` 常驻切 tab 不断矿 |
+| 官网风格矿界面 | 算力 Hero / nonce ticker 动画 / 预计出块 / 命中率 / 全网算力 / 会话统计 / per-worker 诊断 |
+| 后台保活 | 忽略电池优化 + 前台服务 + CPU 常醒(`PARTIAL_WAKE_LOCK`) + 屏幕微亮(`SCREEN_DIM`) |
+| 区块浏览器 | 最近区块高度 / 交易数 / 矿工 |
+| 挖矿收款 | 自动用钱包地址，不需私钥 |
+
+---
+
 ## 适用的人
 - 想在手机上**看 BrowserCoin 链上状态、管 BRC 钱包、发交易、体验挖矿**。
-- **注意**：这是**轻钱包 + 独立矿工**（通过官方 HTTP API 挖空块），不是全节点节点，也不含 P2P 直连。
+- **注意**：这是**轻钱包 + 独立矿工**（通过官方 HTTP API 挖空块），不是全节点，也不含 P2P 直连。
 
 ---
 
@@ -64,14 +79,35 @@ cd android
 - **多核并发**：每个 CPU 核一个 Web Worker，分配互不重叠的 nonce 区间并行磨 Sandglass；界面显示**总算力**（多核求和）。
 - **地址自动取钱包**：不需要手动填地址，直接用钱包 tab 的公钥作为收款地址；**全程不需要私钥**（挖矿只认公钥）。
 - **切换 tab 不断矿**：挖矿用 `v-show` 常驻，切到别的 tab 挖矿继续，不重置。
+- **官网风格实时界面**（开始挖矿后显示）：
+  - 大号算力 Hero（H/s）+ 核数 + "mining block #N"
+  - nonce ticker 动画（`nonce 0x… hash 0x…` 跳动）
+  - 实时统计：**预计出块 / 当前命中率 / 全网算力 / 已试 nonce / 难度 / 本会话出块**
+  - 会话收益（`X BRC 本会话挖得`）
+  - **MINING DIAGNOSTICS**（展开后显示 per-worker 算力）
+  - 全网算力从难度估算 `2^256/target ÷ 150s`；命中率用 `1-e^(-hashes/expected)`
 - **诚实提醒**：全网约 43 万 H/s，你的几核算力占比极低 → **真实主网基本挖不到块**；多核全开会发热耗电。适合学习/体验，不建议长期后台挖。
 
 ## 后台保活说明
-挖矿页有 **🔋 忽略电池优化** 按钮（进系统白名单）；开始挖矿时自动启动 **前台服务**（常驻通知 "BRC Wallet 挖矿中…"），停止时关闭。
-- **能**：前台服务 + 电池白名单显著降低后台被杀概率；`START_STICKY` 尽力重启。
+挖矿页有 **🔋 忽略电池优化** 按钮（进系统白名单）；开始挖矿时自动启动：
+- **前台服务**（常驻通知 "BRC Wallet 挖矿中…"），停止时关闭
+- **CPU 常醒**（`PARTIAL_WAKE_LOCK`）：锁屏/灭屏后挖矿逻辑不休眠
+- **屏幕微亮**（`SCREEN_DIM_WAKE_LOCK`）：开着屏挖矿时不自动暗/灭，能瞥一眼状态；可在挖矿页切换为"屏幕可熄"（省电，但 CPU 常醒仍在）
+- **能**：前台服务 + 电池白名单 + CPU 常醒显著降低后台被杀概率；`START_STICKY` 尽力重启。
 - **限制**（安卓平台硬规则）：电池优化仍需用户手动确认弹窗，且部分厂商系统要额外关自启/省电；低内存时系统仍可能杀，无法绝对保证。这让挖矿在后台更持久，但也更耗电发热。
 
 移植来的官方链模块（`src/vendor/bcochain/`），挖矿用到的链逻辑都在这里。
+
+## 关于"挖矿在哪挖"（solo vs 矿池）
+- 本 App 是 **独立挖矿（solo）**，不是连任何矿池。
+- 流程：拉 `/snapshot` + `/tip` → 构建候选空块（coinbase 给你）→ 用 Sandglass 找 nonce → `POST /block` 直接广播给官方网络，全网共识验证。
+- 这跟比特币 solo 挖矿一样：**看运气，撞到块直接 +50 BRC（当前未减半满额）到你的地址，不需要中间人**。
+- **诚实期望**：期望出块时间 ≈ `150s × (全网算力 ÷ 你的算力)`。以你 600 H/s、全网 43 万 H/s 计 ≈ **30 小时以上**，且方差极大，可能 1 小时也可能一个月。适合当"彩票/技术体验"，不适合当收益。
+
+## 关于显卡挖矿（作者实测）
+- Sandglass 是 **memory-latency-hard** 串行指针追逐 → **显卡没有架构优势**，官方设计目标就是"让 GPU 无优势、浏览器/CPU 公平"。
+- 官方作者 `browsercoinSandglassV3` 仓库实测（RTX 5090）：**单卡 2,460 H/s vs 24 核 CPU 2,281 H/s，只高 8%，但功耗 258W**——每焦耳产出 CPU/浏览器反而更优。
+- **结论**：想靠显卡多算力不划算；已有显卡可当技术探索（官方仓库有 `native/sandglass_hip.cpp` AMD 适配 + `bench_gpu.py`）。
 
 ---
 
@@ -81,13 +117,13 @@ bco-wallet/
 ├── src/lib/brc.ts        BRC 协议核心：地址/交易/compact难度/官方 API
 ├── src/lib/wallet.ts     Ed25519 钱包（keygen/签名/本地持久化）
 ├── src/lib/format.ts     金额格式化 (wei↔BRC)、地址缩写
-├── src/lib/miner.ts      挖矿核心：snapshot同步、建空块、stateRoot、广播
-├── src/lib/keepalive.ts  Capacitor 原生保活桥接（前台服务/电池优化，native 检测降级 no-op）
+├── src/lib/miner.ts      挖矿核心：snapshot同步、建空块、stateRoot、广播、全网算力/命中率估算
+├── src/lib/keepalive.ts  Capacitor 原生保活桥接（前台服务/电池/CPU常醒/屏幕微亮，native降级 no-op）
 ├── src/miner.worker.ts   挖矿 Worker（多核，每核一段 nonce，不冻结 UI）
 ├── src/vendor/bcochain/  官方链模块（crypto/chain/util，精简去 argon2id）
 ├── src/composables/useNetwork.ts  实时状态轮询 + 钱包状态
 ├── src/App.vue           主界面（状态/钱包/发送/挖矿/浏览器 5 tab）
-├── src/Miner.vue         挖矿页（多核 + 保活按钮）
+├── src/Miner.vue         挖矿页（多核 + 官网风格实时界面 + 保活按钮）
 ├── src/style.css         深色主题样式
 ├── src/main.ts           入口（含 Vue 错误边界，出错会显示而非白屏）
 ├── capacitor.config.ts   Capacitor 配置
@@ -134,6 +170,12 @@ bco-wallet/
 10. **多核算力显示要"求和"而非"取最大"**：别写 `hashrate = Math.max(prev, workerHps)`（那只会显示单核）。应主线程累加各 worker 上报 hash 数、按时间窗求总算力。已在 `src/Miner.vue` 修好。
 
 11. **Capacitor 6 本地插件要双保险注册**：既要有 `@CapacitorPlugin` 注解，还要在 `MainActivity` 里 `registerPlugin(BGKeepAlivePlugin.class)`，否则插件可能不被发现（尤其 debug 构建）。
+
+12. **官方 `/snapshot` 接口偏慢（~20s）**：是官方限流/重建缓存所致，非本项目问题。余额查询用**异步加载 + 60s 缓存**，避免卡 UI。见 `useNetwork.ts` 的 `refreshBalance`。
+
+13. **挖矿算力统计**：别用 `Math.max` 取单核最大值（会少算）；应主线程**累加各 worker 上报 hash 数**、或按 worker 存 `hps` 求和。命中率用 `1-e^(-已试哈希/每块期望)`，全网算力用 `2^256/target ÷ 150s` 估算，均与官网一致。
+
+14. **`/snapshot` 是 finalize 后状态（约落后 tip 30 分钟）**：钱包余额显示的是确认区高度，不是实时 tip——对钱包够用，但刚挖到块的 coinbase 要等确认才显示。要有此预期。
 
 ---
 
